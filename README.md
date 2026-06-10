@@ -6,7 +6,7 @@ EchoMind Java 是 Python 版 EchoMind 的 Java/Spring 技术栈重构版，目�
 /Users/xiao_xiong/Desktop/code/EchoMindJava
 ```
 
-当前版本已经覆盖智能客服主链路：对话请求、Redis 工作记忆、知识库检索、多 Agent 路由、Spring AI 模型调用、回答校验、评测、监控和 Docker 部署。
+当前版本已经覆盖智能客服主链路：对话请求、Redis 工作记忆、知识库检索、多 Agent 路由、Spring AI 模型调用、回答校验、评测、监控、Swagger 文档和 Docker 部署。
 
 ## 技术栈
 
@@ -37,36 +37,44 @@ POST /chat
   -> 写入 Redis，并异步更新用户画像
 ```
 
-## 和 Python 版的主要不同
+相关实现：
 
-Python 版使用 FastAPI、Anthropic Async SDK、ChromaDB 和自定义 MCPToolManager。
+- `src/main/java/com/echomind/api/EchoMindController.java`
+- `src/main/java/com/echomind/memory/MemoryManager.java`
+- `src/main/java/com/echomind/tool/KnowledgeToolManager.java`
+- `src/main/java/com/echomind/agent/AgentOrchestrator.java`
+- `src/main/java/com/echomind/agent/AnswerVerifier.java`
 
-Java 版使用 Spring Boot、Spring AI、LangChain4j、Spring Data Redis、Micrometer，并额外支持 DeepSeek profile、Answer Verifier 和 Hybrid RAG。
+## Python 与 Java 版本对照
 
-当前 Java 版已经补齐：
+| 能力 | Python 版本 | Java 版本 | 当前状态 |
+|------|-------------|-----------|----------|
+| Web 框架 | FastAPI | Spring Boot MVC | 已对齐 |
+| 模型调用 | Anthropic Async SDK | Spring AI ChatModel | 已对齐，调用栈不同 |
+| DeepSeek | 未内置 | Spring AI DeepSeek profile | Java 增强 |
+| Agent 类型 | General / Technical / Billing | General / Technical / Billing | 已对齐 |
+| Agent 路由 | 意图路由 + 性能路由 + 降级 | 意图路由 + 性能路由 + 降级 | 已对齐 |
+| 复合问题并行处理 | 支持 | 支持 | 已对齐 |
+| 意图识别 | LLM + embedding/hash + pattern | LLM + char n-gram semantic + pattern | 基本对齐 |
+| 工作记忆 | Redis | Redis | 已对齐 |
+| 情景记忆 | ChromaDB `episodic` collection | JSON 持久化 + 本地向量检索 | 功能对齐，存储不同 |
+| 用户画像 | ChromaDB `user_profile` collection | JSON 持久化 | 功能对齐，存储不同 |
+| 知识库 | ChromaDB `knowledge_base` collection | JSON 持久化 Hybrid RAG | 功能对齐，主检索实现不同 |
+| 查询改写 | LLM 改写 | LLM 改写 | 已对齐 |
+| 检索重排 | LLM rerank | LLM rerank，失败回退融合分 | 已对齐 |
+| 工具框架 | 通用 MCPToolManager | 专用 KnowledgeToolManager | 部分对齐 |
+| 熔断/缓存/超时/fallback | 支持 | 支持 | 已对齐到知识库工具 |
+| 评测 | Intent、Macro-F1、LLM Judge、baseline | Intent、Macro-F1、LLM Judge、baseline | 基本对齐 |
+| 监控 | Prometheus client、Webhook、Z-score | Actuator、Micrometer、Webhook、阈值告警 | 部分对齐 |
+| API 文档 | FastAPI `/docs` | Springdoc Swagger UI `/docs` | 已对齐 |
+| Docker | App、Redis、ChromaDB、Prometheus、Nginx | App、Redis、ChromaDB、Prometheus、Nginx | 已对齐 |
+| CLI | `api/main.py --cli` | 未实现 | Java 缺失 |
 
-- `/chat`、`/search`、`/knowledge/add`、`/knowledge/upload`、`/knowledge/stats`
-- `/monitor`、`/metrics`、`/eval/run`
-- Swagger UI：`/docs`
-- Redis 工作记忆
-- 长期记忆和用户画像 JSON 持久化
-- 知识库导入内容 JSON 持久化
-- Docker Compose 中的 Redis、ChromaDB、Prometheus、Nginx
+## Java 版已补齐的能力
 
-仍然不同：
+### DeepSeek 兼容
 
-- Java 版还没有抽象成 Python 那种通用 MCPToolManager / ToolRegistry。
-- Java 版保留 ChromaDB 容器，但当前主检索走本地持久化 Hybrid RAG，不是直接查 ChromaDB collection。
-- Python 版有 CLI 模式，Java 版当前只提供 HTTP 服务。
-- Python 版监控里有 Z-score 异常检测，Java 版目前是阈值告警 + Micrometer + Webhook。
-
-更完整的对照见 [JAVA_PYTHON_DIFF.md](/Users/xiao_xiong/Desktop/code/EchoMindJava/JAVA_PYTHON_DIFF.md)。
-
-## 模型配置
-
-Java 版通过 Spring profile 切换模型。
-
-DeepSeek：
+Java 版通过 Spring profile 切换模型：
 
 ```env
 SPRING_PROFILES_ACTIVE=deepseek
@@ -75,7 +83,15 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
 ```
 
-Anthropic：
+当前还做了启动容错：缺少真实 API Key 时使用 `echomind-local-placeholder` 避免 Spring AI 自动配置阶段直接失败。真实调用时如果没有配置真实 key，并且：
+
+```env
+LLM_FALLBACK_ENABLED=true
+```
+
+系统会返回本地降级回复。
+
+Anthropic 配置：
 
 ```env
 SPRING_PROFILES_ACTIVE=anthropic
@@ -84,32 +100,166 @@ ANTHROPIC_BASE_URL=https://api.anthropic.com
 ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 ```
 
-没有真实 API Key 时应用也可以启动。代码会使用启动占位 key 避免 Spring AI 自动配置失败；实际调用模型时如果没有真实 key，并且：
+### 记忆和知识库持久化
+
+Python 版：
+
+- Redis 保存工作记忆。
+- ChromaDB 保存情景记忆、用户画像和知识库。
+
+Java 版：
+
+- Redis 保存工作记忆。
+- `data/java/memory-store.json` 保存情景记忆和用户画像。
+- `data/java/knowledge-store.json` 保存知识库片段。
+- Docker 中保存到 `/app/data/java`，由 `app-data` volume 持久化。
+
+配置项：
 
 ```env
-LLM_FALLBACK_ENABLED=true
+ECHOMIND_DATA_DIR=data/java
+KNOWLEDGE_STORE_PATH=data/java/knowledge-store.json
+MEMORY_STORE_PATH=data/java/memory-store.json
+EVAL_BASELINE_PATH=data/eval/baseline.json
 ```
 
-系统会返回本地降级回复。
+当前用户可见效果已经对齐：应用重启后，导入的知识库、长期记忆和画像可以恢复。底层差异仍然存在：Java 没有直接写入 ChromaDB collection，而是 JSON 持久化 + 本地 hash vector 检索。
 
-## 数据持久化
+### Hybrid RAG
 
-默认本地路径：
+Python 版知识库主要通过 ChromaDB 做语义检索。
 
-| 数据 | 默认路径 | 环境变量 |
-|------|----------|----------|
-| 知识库片段 | `data/java/knowledge-store.json` | `KNOWLEDGE_STORE_PATH` |
-| 长期记忆和用户画像 | `data/java/memory-store.json` | `MEMORY_STORE_PATH` |
-| 评测 baseline | `data/eval/baseline.json` | `EVAL_BASELINE_PATH` |
-
-Docker 中路径：
+Java 版当前检索链路：
 
 ```text
-/app/data/java/knowledge-store.json
-/app/data/java/memory-store.json
+文档导入
+  -> LangChain4j recursive splitter
+  -> JSON 持久化
+  -> 本地 documents 索引
+
+查询
+  -> LLM 查询改写
+  -> 多子查询并行召回
+  -> BM25 关键词得分
+  -> 本地 hash vector 语义得分
+  -> 加权融合
+  -> LLM rerank
+  -> fallback 到融合分排序
 ```
 
-这些文件挂载在 `app-data` volume 下，容器重建后仍可保留。
+这比 Python 版多了 BM25 + vector 融合检索，但没有把 ChromaDB 作为主召回源。
+
+### 评测和监控
+
+Java 版已经实现：
+
+- Intent Accuracy
+- Macro-F1
+- per-class Precision / Recall / F1
+- LLM-as-Judge 四维评分
+- baseline 保存和回归检测
+- `/monitor`
+- `/metrics`
+- `/actuator/prometheus`
+- Webhook 告警
+- Agent 路由惩罚反馈
+
+相关实现：
+
+- `src/main/java/com/echomind/evaluation/EndToEndEvaluator.java`
+- `src/main/java/com/echomind/evaluation/LLMJudge.java`
+- `src/main/java/com/echomind/monitor/PerformanceMonitor.java`
+
+### Swagger / OpenAPI
+
+Python 版 FastAPI 默认提供 `/docs`。
+
+Java 版现在通过 Springdoc OpenAPI 提供同名入口：
+
+- Swagger UI：`http://localhost:8080/docs`
+- Nginx 代理：`http://localhost:8081/docs`
+- OpenAPI JSON：`http://localhost:8080/v3/api-docs`
+
+相关实现：
+
+- `pom.xml`
+- `src/main/resources/application.yml`
+- `src/main/java/com/echomind/config/OpenApiConfig.java`
+- `src/main/java/com/echomind/api/SwaggerDocsController.java`
+- `src/main/java/com/echomind/api/EchoMindController.java`
+
+`/docs` 页面会从 jsdelivr CDN 加载 Swagger UI 静态资源；如果部署在不能访问外网的环境，需要把 Swagger UI 静态资源放到项目本地。
+
+## 当前仍然不同的地方
+
+### 通用 MCPToolManager 未完整迁移
+
+Python 版 `MCPToolManager` 可以注册任意 Tool，并统一处理：
+
+- register / unregister
+- JSON Schema 参数校验
+- timeout
+- circuit breaker
+- TTL cache
+- fallback
+- rerank
+- 工具统计
+
+Java 版当前是专用 `KnowledgeToolManager`，只服务 `knowledge_search`，但已经具备查询改写、并行召回、缓存、超时、熔断、fallback、rerank 和统计。
+
+要完全对齐，可以继续新增：
+
+- `ToolDefinition`
+- `ToolRegistry`
+- `ToolExecutor`
+- JSON Schema validator
+
+### ChromaDB 不是 Java 版主检索源
+
+Java 版保留 ChromaDB 容器，并引入了 Spring AI Chroma VectorStore starter，但当前 profile 中排除了 Chroma VectorStore 自动配置，主检索仍然走本地 Hybrid RAG。
+
+原因：
+
+- DeepSeek Chat starter 不提供 EmbeddingModel。
+- 当前实现优先保证 DeepSeek / Anthropic 都能启动和运行。
+
+后续可增强为：
+
+```text
+ChromaDB VectorStore semantic search
+  + BM25 keyword recall
+  + RRF / weighted fusion
+  + LLM rerank
+```
+
+### CLI 模式未迁移
+
+Python 版支持：
+
+```bash
+python api/main.py --cli
+```
+
+Java 版当前没有 CLI。如果需要对齐，可以使用 Spring Shell 或 `CommandLineRunner` 实现。
+
+### 监控算法仍有差异
+
+Python 版监控包含 Z-score 异常检测。
+
+Java 版当前是：
+
+- 成功率阈值告警
+- 平均延迟阈值告警
+- Webhook
+- Micrometer 指标
+- 路由惩罚反馈
+
+可继续补：
+
+- Z-score 异常检测
+- 告警 resolved 状态
+- 请求 latency histogram
+- tool success rate gauge
 
 ## 主要接口
 
@@ -130,7 +280,37 @@ Docker 中路径：
 | GET | `/docs` | Swagger UI，可在线调用接口 |
 | GET | `/v3/api-docs` | OpenAPI JSON |
 
-Jackson 已配置 `SNAKE_CASE`，所以接口 JSON 字段会输出为 `conversation_id`、`agent_type`、`latency_ms`、`knowledge_used` 等格式。
+Java 版配置了 Jackson `SNAKE_CASE`，响应字段会输出为：
+
+```json
+{
+  "conversation_id": "...",
+  "response": "...",
+  "intent": "...",
+  "agent_type": "...",
+  "escalated": false,
+  "latency_ms": 123,
+  "knowledge_used": true,
+  "verified": true,
+  "grounded": true
+}
+```
+
+和 Python 版主要差异：
+
+- Python 使用 `conv_id`。
+- Java 使用 `conversation_id`。
+- Java 额外返回 `verified` 和 `grounded`。
+
+推荐请求字段：
+
+```json
+{
+  "message": "我想申请退款",
+  "user_id": "u1001",
+  "conversation_id": "optional-conversation-id"
+}
+```
 
 ## 本地运行
 
@@ -330,17 +510,3 @@ curl -X POST http://localhost:8080/eval/run \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
-
-## 常见问题
-
-### 为什么 Compose 里还有 ChromaDB？
-
-当前 Java 版主检索使用持久化 Hybrid RAG。ChromaDB 容器保留给 Spring AI VectorStore / ChromaDB 主检索扩展，也用于和 Python 版部署结构保持接近。
-
-### 为什么没有 API Key 也能启动？
-
-为了避免 Docker 和本地开发阶段因为缺少模型 key 直接启动失败，配置里使用了 `echomind-local-placeholder` 作为启动占位值。真实模型调用前会检查是否配置了真实 key；未配置时会走本地 fallback。
-
-### 和 Python 版完全等价了吗？
-
-还没有完全等价。Java 版已经补齐主链路、DeepSeek、Hybrid RAG、LLM rerank、上传接口、持久化、评测、监控和 Docker 部署配套。剩余主要差异是通用 ToolRegistry、ChromaDB 主检索、CLI 模式和更复杂的监控算法。
