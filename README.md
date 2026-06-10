@@ -2,9 +2,7 @@
 
 EchoMind Java 是 Python 版 EchoMind 的 Java/Spring 技术栈重构版，目录位于：
 
-```text
-/Users/xiao_xiong/Desktop/code/EchoMindJava
-```
+
 
 当前版本已经覆盖智能客服主链路：对话请求、Redis 工作记忆、知识库检索、多 Agent 路由、Spring AI 模型调用、回答校验、评测、监控、Swagger 文档和 Docker 部署。
 
