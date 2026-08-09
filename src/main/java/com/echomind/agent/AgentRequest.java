@@ -1,6 +1,7 @@
 package com.echomind.agent;
 
 import com.echomind.intent.IntentCategory;
+import com.echomind.intent.IntentResult;
 import com.echomind.intent.UrgencyLevel;
 
 import java.util.List;
@@ -13,15 +14,57 @@ public record AgentRequest(
         String conversationId,
         String context,
         List<Map<String, String>> history,
+        Map<String, List<String>> entities,
         IntentCategory intent,
+        String intentGroup,
         UrgencyLevel urgency,
+        double intentConfidence,
         String requestId
 ) {
-    public AgentRequest withIntent(IntentCategory intent, UrgencyLevel urgency) {
-        return new AgentRequest(message, userId, conversationId, context, history, intent, urgency, requestId);
+    public AgentRequest withIntent(IntentResult intentResult) {
+        return new AgentRequest(
+                message,
+                userId,
+                conversationId,
+                context,
+                history,
+                intentResult.entities(),
+                intentResult.intent(),
+                intentResult.intentGroup(),
+                intentResult.urgency(),
+                intentResult.confidence(),
+                requestId
+        );
     }
 
     public static AgentRequest of(String message, String userId, String conversationId, String context, List<Map<String, String>> history) {
-        return new AgentRequest(message, userId, conversationId, context, history, null, null, UUID.randomUUID().toString().substring(0, 8));
+        return new AgentRequest(message, userId, conversationId, context, history, Map.of(), null, null, null, 1.0, newRequestId());
+    }
+
+    public static AgentRequest of(
+            String message,
+            String userId,
+            String conversationId,
+            String context,
+            List<Map<String, String>> history,
+            IntentResult intentResult
+    ) {
+        return new AgentRequest(
+                message,
+                userId,
+                conversationId,
+                context,
+                history,
+                intentResult.entities(),
+                intentResult.intent(),
+                intentResult.intentGroup(),
+                intentResult.urgency(),
+                intentResult.confidence(),
+                newRequestId()
+        );
+    }
+
+    private static String newRequestId() {
+        return UUID.randomUUID().toString().substring(0, 8);
     }
 }

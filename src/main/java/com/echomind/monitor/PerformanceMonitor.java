@@ -54,12 +54,13 @@ public class PerformanceMonitor {
             monitorCollections.increment();
             Map<String, Object> agentStats = orchestrator.stats();
             Map<String, Double> penalties = new HashMap<>();
-            double minSuccessRate = 1.0;
+            double[] minSuccessRate = {1.0};
             agentStats.forEach((key, value) -> {
                 if (value instanceof Map<?, ?> map) {
                     double sr = asDouble(map.get("success_rate"), 1.0);
                     double avg = asDouble(map.get("avg_ms"), 0.0);
-                    if (sr < minSuccessRate) {
+                    if (sr < minSuccessRate[0]) {
+                        minSuccessRate[0] = sr;
                         agentSuccessRate = sr;
                     }
                     if (sr < properties.getMonitor().getSuccessRateThreshold()) {
@@ -71,6 +72,7 @@ public class PerformanceMonitor {
                     penalties.put(key, routingPenalty(sr, avg));
                 }
             });
+            agentSuccessRate = minSuccessRate[0];
             orchestrator.updateRoutingPenalties(penalties);
             if (!penalties.isEmpty()) {
                 addSuggestion("路由权重已根据在线表现调整", "检查 /monitor 中低成功率或高延迟 Agent，必要时优化 prompt 或增加实例。", 7);

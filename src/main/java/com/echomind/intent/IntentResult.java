@@ -7,8 +7,10 @@ public record IntentResult(
         IntentCategory intent,
         double confidence,
         UrgencyLevel urgency,
+        String intentGroup,
         Map<String, List<String>> entities,
         String reasoning,
-        long latencyMs
+        long latencyMs,
+        Map<String, Double> sourceScores
 ) {
 }

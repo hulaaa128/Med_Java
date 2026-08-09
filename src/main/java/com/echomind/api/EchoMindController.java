@@ -2,6 +2,7 @@ package com.echomind.api;
 
 import com.echomind.agent.AgentOrchestrator;
 import com.echomind.agent.AgentRequest;
+import com.echomind.agent.AgentType;
 import com.echomind.agent.AnswerVerifier;
 import com.echomind.agent.OrchestratorResult;
 import com.echomind.api.dto.BatchDocInput;
@@ -9,12 +10,16 @@ import com.echomind.api.dto.ChatRequest;
 import com.echomind.api.dto.ChatResponse;
 import com.echomind.api.dto.EvalRunRequest;
 import com.echomind.evaluation.EndToEndEvaluator;
+import com.echomind.intent.IntentCategory;
+import com.echomind.intent.IntentRecognizer;
+import com.echomind.intent.IntentResult;
 import com.echomind.knowledge.KnowledgeBaseService;
 import com.echomind.knowledge.SearchResult;
 import com.echomind.memory.MemoryContext;
 import com.echomind.memory.MemoryManager;
 import com.echomind.memory.MessageRole;
 import com.echomind.monitor.PerformanceMonitor;
+import com.echomind.skill.SkillManager;
 import com.echomind.tool.KnowledgeToolManager;
 import com.echomind.tool.ToolResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +40,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
@@ -43,33 +49,39 @@ import java.util.UUID;
 public class EchoMindController {
 
     private final AgentOrchestrator orchestrator;
+    private final IntentRecognizer intentRecognizer;
     private final MemoryManager memoryManager;
     private final KnowledgeToolManager knowledgeToolManager;
     private final KnowledgeBaseService knowledgeBaseService;
     private final AnswerVerifier answerVerifier;
     private final PerformanceMonitor performanceMonitor;
     private final EndToEndEvaluator evaluator;
+    private final SkillManager skillManager;
     private final ObjectMapper objectMapper;
     private final PrometheusMeterRegistry prometheusMeterRegistry;
 
     public EchoMindController(
             AgentOrchestrator orchestrator,
+            IntentRecognizer intentRecognizer,
             MemoryManager memoryManager,
             KnowledgeToolManager knowledgeToolManager,
             KnowledgeBaseService knowledgeBaseService,
             AnswerVerifier answerVerifier,
             PerformanceMonitor performanceMonitor,
             EndToEndEvaluator evaluator,
+            SkillManager skillManager,
             ObjectMapper objectMapper,
             PrometheusMeterRegistry prometheusMeterRegistry
     ) {
         this.orchestrator = orchestrator;
+        this.intentRecognizer = intentRecognizer;
         this.memoryManager = memoryManager;
         this.knowledgeToolManager = knowledgeToolManager;
         this.knowledgeBaseService = knowledgeBaseService;
         this.answerVerifier = answerVerifier;
         this.performanceMonitor = performanceMonitor;
         this.evaluator = evaluator;
+        this.skillManager = skillManager;
         this.objectMapper = objectMapper;
         this.prometheusMeterRegistry = prometheusMeterRegistry;
     }
@@ -89,16 +101,17 @@ public class EchoMindController {
                 : request.conversationId();
         MemoryContext memoryContext = memoryManager.getContext(userId, conversationId, request.message());
         String memoryText = memoryContext.toPromptText(objectMapper);
-        ToolResult<List<SearchResult>> knowledge = shouldUseKnowledge(request.message())
-                ? knowledgeToolManager.searchWithRewrite(request.message(), 3)
-                : new ToolResult<>(true, List.of(), "knowledge_search", null, false, 0, false);
-        String knowledgeText = buildKnowledgeContext(knowledge.data());
-        String fullContext = join(memoryText, knowledgeText);
         List<Map<String, String>> history = memoryContext.recentMessages().stream()
                 .skip(Math.max(0, memoryContext.recentMessages().size() - 5))
                 .map(m -> Map.of("role", m.role().name().toLowerCase(), "content", m.content()))
                 .toList();
-        OrchestratorResult result = orchestrator.run(AgentRequest.of(request.message(), userId, conversationId, fullContext, history));
+        IntentResult intentResult = intentRecognizer.recognize(request.message(), history);
+        ToolResult<List<SearchResult>> knowledge = shouldUseKnowledge(intentResult.intent())
+                ? knowledgeToolManager.searchWithRewrite(request.message(), 3)
+                : new ToolResult<>(true, List.of(), "knowledge_search", null, false, 0, false);
+        String knowledgeText = buildKnowledgeContext(knowledge.data());
+        String fullContext = join(memoryText, knowledgeText);
+        OrchestratorResult result = orchestrator.run(AgentRequest.of(request.message(), userId, conversationId, fullContext, history, intentResult));
         AnswerVerifier.VerificationResult verification = answerVerifier.verify(request.message(), result.response(), fullContext);
         boolean escalated = result.escalated() || verification.needEscalation();
         memoryManager.addMessage(userId, conversationId, MessageRole.USER, request.message());
@@ -108,12 +121,21 @@ public class EchoMindController {
                 conversationId,
                 result.response(),
                 result.intent() == null ? "other" : result.intent().name().toLowerCase(),
+                intentResult.intentGroup(),
                 result.agentType().name().toLowerCase(),
+                agentNames(result.agentTypes()),
+                result.primaryAgent() == null ? null : result.primaryAgent().name().toLowerCase(Locale.ROOT),
+                agentNames(result.supportingAgents()),
+                result.routingReason(),
+                result.routingConfidence(),
                 escalated,
                 result.latencyMs(),
-                knowledge.data() != null && !knowledge.data().isEmpty(),
+                knowledge.success() && knowledge.data() != null && !knowledge.data().isEmpty(),
                 verification.pass(),
-                verification.grounded()
+                verification.grounded(),
+                intentResult.entities(),
+                round(intentResult.confidence(), 4),
+                intentResult.sourceScores()
         );
     }
 
@@ -167,6 +189,19 @@ public class EchoMindController {
         return performanceMonitor.summary();
     }
 
+    @GetMapping("/skills")
+    @Operation(summary = "Skills 摘要", description = "查看当前已加载的动态 Skills，便于确认热加载结果和排查解析错误。")
+    public Map<String, Object> skills() {
+        return skillManager.summary();
+    }
+
+    @PostMapping("/skills/reload")
+    @Operation(summary = "重新加载 Skills", description = "运行时重新扫描 Skill 目录，不需要重启服务。")
+    public Map<String, Object> reloadSkills() {
+        skillManager.reload();
+        return skillManager.summary();
+    }
+
     @GetMapping(value = "/metrics", produces = "text/plain; version=0.0.4; charset=utf-8")
     @Operation(summary = "Prometheus 指标", description = "返回 Prometheus 文本格式指标，兼容 Python 版 /metrics 路径。")
     public ResponseEntity<String> metrics() {
@@ -179,12 +214,27 @@ public class EchoMindController {
         return evaluator.run(request);
     }
 
-    private boolean shouldUseKnowledge(String message) {
-        String msg = message == null ? "" : message.toLowerCase();
-        if (List.of("你好", "您好", "hi", "hello", "hey").contains(msg.trim())) {
+    private boolean shouldUseKnowledge(IntentCategory intent) {
+        if (intent == null) {
             return false;
         }
-        return msg.length() >= 4 || msg.contains("退款") || msg.contains("订单") || msg.contains("登录") || msg.contains("报错");
+        return switch (intent) {
+            case QUERY,
+                    COMPLAINT,
+                    REQUEST,
+                    TECHNICAL,
+                    BILLING,
+                    ACCOUNT,
+                    ORDER_STATUS,
+                    LOGISTICS,
+                    REFUND,
+                    INVOICE,
+                    PAYMENT_ISSUE,
+                    ACCOUNT_SECURITY,
+                    TECHNICAL_LOGIN,
+                    TECHNICAL_CRASH -> true;
+            case GREETING, ESCALATION, HUMAN_HANDOFF, FEEDBACK, OTHER -> false;
+        };
     }
 
     private String buildKnowledgeContext(List<SearchResult> results) {
@@ -209,6 +259,20 @@ public class EchoMindController {
             return left;
         }
         return left + "\n\n" + right;
+    }
+
+    private List<String> agentNames(List<AgentType> agentTypes) {
+        if (agentTypes == null) {
+            return List.of();
+        }
+        return agentTypes.stream()
+                .map(agentType -> agentType.name().toLowerCase(Locale.ROOT))
+                .toList();
+    }
+
+    private double round(double value, int digits) {
+        double factor = Math.pow(10, digits);
+        return Math.round(value * factor) / factor;
     }
 
     @SuppressWarnings("unchecked")

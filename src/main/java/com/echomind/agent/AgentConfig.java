@@ -1,6 +1,7 @@
 package com.echomind.agent;
 
 import com.echomind.llm.LlmGateway;
+import com.echomind.skill.SkillManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -11,11 +12,11 @@ import java.util.Map;
 public class AgentConfig {
 
     @Bean
-    Map<AgentType, List<BaseAgent>> agentPool(LlmGateway llmGateway) {
+    Map<AgentType, List<BaseAgent>> agentPool(LlmGateway llmGateway, SkillManager skillManager) {
         return Map.of(
-                AgentType.GENERAL, List.of(new GeneralAgent(llmGateway)),
-                AgentType.TECHNICAL, List.of(new TechnicalAgent(llmGateway)),
-                AgentType.BILLING, List.of(new BillingAgent(llmGateway))
+                AgentType.GENERAL, List.of(new GeneralAgent(llmGateway, skillManager)),
+                AgentType.TECHNICAL, List.of(new TechnicalAgent(llmGateway, skillManager)),
+                AgentType.BILLING, List.of(new BillingAgent(llmGateway, skillManager))
         );
     }
 }

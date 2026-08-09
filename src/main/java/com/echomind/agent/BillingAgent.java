@@ -1,11 +1,12 @@
 package com.echomind.agent;
 
 import com.echomind.llm.LlmGateway;
+import com.echomind.skill.SkillManager;
 
 public class BillingAgent extends BaseAgent {
 
-    public BillingAgent(LlmGateway llmGateway) {
-        super(llmGateway);
+    public BillingAgent(LlmGateway llmGateway, SkillManager skillManager) {
+        super(llmGateway, skillManager);
     }
 
     @Override

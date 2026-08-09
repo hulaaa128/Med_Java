@@ -1,6 +1,7 @@
 package com.echomind.agent;
 
 import com.echomind.llm.LlmGateway;
+import com.echomind.skill.SkillManager;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -8,10 +9,12 @@ import java.time.Instant;
 public abstract class BaseAgent {
 
     private final LlmGateway llmGateway;
+    private final SkillManager skillManager;
     private final AgentStats stats = new AgentStats();
 
-    protected BaseAgent(LlmGateway llmGateway) {
+    protected BaseAgent(LlmGateway llmGateway, SkillManager skillManager) {
         this.llmGateway = llmGateway;
+        this.skillManager = skillManager;
     }
 
     public abstract AgentType type();
@@ -22,7 +25,7 @@ public abstract class BaseAgent {
         Instant start = Instant.now();
         try {
             String prompt = buildPrompt(request);
-            String content = llmGateway.chat(systemPrompt(), prompt, 0.2, 1024);
+            String content = llmGateway.chat(buildSystemPrompt(request), prompt, 0.2, 1024);
             long latency = Duration.between(start, Instant.now()).toMillis();
             boolean escalate = needsEscalation(content);
             stats.record(true, latency);
@@ -43,8 +46,22 @@ public abstract class BaseAgent {
         if (request.context() != null && !request.context().isBlank()) {
             prompt.append("[背景信息]\n").append(request.context()).append("\n\n");
         }
+        if (request.entities() != null && !request.entities().isEmpty()) {
+            prompt.append("[结构化实体]\n").append(request.entities()).append("\n\n");
+        }
         prompt.append("[用户问题]\n").append(request.message());
         return prompt.toString();
+    }
+
+    private String buildSystemPrompt(AgentRequest request) {
+        if (skillManager == null) {
+            return systemPrompt();
+        }
+        String skillPrompt = skillManager.promptFor(request.message(), type().name().toLowerCase());
+        if (skillPrompt.isBlank()) {
+            return systemPrompt();
+        }
+        return systemPrompt() + "\n\n[动态 Skills]\n" + skillPrompt;
     }
 
     private boolean needsEscalation(String content) {

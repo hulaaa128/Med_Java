@@ -1,11 +1,12 @@
 package com.echomind.agent;
 
 import com.echomind.llm.LlmGateway;
+import com.echomind.skill.SkillManager;
 
 public class TechnicalAgent extends BaseAgent {
 
-    public TechnicalAgent(LlmGateway llmGateway) {
-        super(llmGateway);
+    public TechnicalAgent(LlmGateway llmGateway, SkillManager skillManager) {
+        super(llmGateway, skillManager);
     }
 
     @Override

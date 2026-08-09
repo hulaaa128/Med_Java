@@ -2,12 +2,19 @@ package com.echomind.agent;
 
 import com.echomind.intent.IntentCategory;
 
+import java.util.List;
+
 public record OrchestratorResult(
         String requestId,
         String response,
         AgentType agentType,
         IntentCategory intent,
         boolean escalated,
-        long latencyMs
+        long latencyMs,
+        List<AgentType> agentTypes,
+        AgentType primaryAgent,
+        List<AgentType> supportingAgents,
+        String routingReason,
+        double routingConfidence
 ) {
 }

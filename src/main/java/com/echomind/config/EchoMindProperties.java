@@ -11,6 +11,7 @@ public class EchoMindProperties {
     private final Storage storage = new Storage();
     private final Monitor monitor = new Monitor();
     private final Eval eval = new Eval();
+    private final Skills skills = new Skills();
 
     public Llm getLlm() {
         return llm;
@@ -34,6 +35,10 @@ public class EchoMindProperties {
 
     public Eval getEval() {
         return eval;
+    }
+
+    public Skills getSkills() {
+        return skills;
     }
 
     public static class Llm {
@@ -177,6 +182,27 @@ public class EchoMindProperties {
 
         public void setBaselinePath(String baselinePath) {
             this.baselinePath = baselinePath;
+        }
+    }
+
+    public static class Skills {
+        private String rootDir = "skills";
+        private int maxPromptChars = 5000;
+
+        public String getRootDir() {
+            return rootDir;
+        }
+
+        public void setRootDir(String rootDir) {
+            this.rootDir = rootDir;
+        }
+
+        public int getMaxPromptChars() {
+            return maxPromptChars;
+        }
+
+        public void setMaxPromptChars(int maxPromptChars) {
+            this.maxPromptChars = maxPromptChars;
         }
     }
 }

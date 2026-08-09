@@ -69,6 +69,9 @@ echomind:
     webhook-url: ${ALERT_WEBHOOK_URL:}
   eval:
     baseline-path: ${EVAL_BASELINE_PATH:data/eval/baseline.json}
+  skills:
+    root-dir: ${ECHOMIND_SKILLS_DIR:skills}
+    max-prompt-chars: ${ECHOMIND_SKILLS_MAX_PROMPT_CHARS:5000}
 
 ---
 spring:
