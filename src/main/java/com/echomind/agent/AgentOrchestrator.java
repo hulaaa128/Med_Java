@@ -4,6 +4,9 @@ import com.echomind.intent.IntentCategory;
 import com.echomind.intent.IntentRecognizer;
 import com.echomind.intent.IntentResult;
 import com.echomind.intent.UrgencyLevel;
+import com.echomind.trace.RequestTraceStore;
+import com.echomind.trace.RequestToolTrace;
+import com.echomind.trace.ToolCallTrace;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -24,11 +27,13 @@ public class AgentOrchestrator {
 
     private final IntentRecognizer intentRecognizer;
     private final Map<AgentType, List<BaseAgent>> pool;
+    private final RequestTraceStore traceStore;
     private final Map<IntentCategory, AgentType> routing = new EnumMap<>(IntentCategory.class);
 
-    public AgentOrchestrator(IntentRecognizer intentRecognizer, Map<AgentType, List<BaseAgent>> pool) {
+    public AgentOrchestrator(IntentRecognizer intentRecognizer, Map<AgentType, List<BaseAgent>> pool, RequestTraceStore traceStore) {
         this.intentRecognizer = intentRecognizer;
         this.pool = pool;
+        this.traceStore = traceStore;
         routing.put(IntentCategory.TECHNICAL, AgentType.TECHNICAL);
         routing.put(IntentCategory.TECHNICAL_LOGIN, AgentType.TECHNICAL);
         routing.put(IntentCategory.TECHNICAL_CRASH, AgentType.TECHNICAL);
@@ -43,6 +48,10 @@ public class AgentOrchestrator {
     }
 
     public OrchestratorResult run(AgentRequest request) {
+        return run(request, List.of());
+    }
+
+    public OrchestratorResult run(AgentRequest request, List<ToolCallTrace> externalToolCalls) {
         Instant start = Instant.now();
         AgentRequest req = request;
         if (req.intent() == null) {
@@ -51,7 +60,7 @@ public class AgentOrchestrator {
         }
 
         if (needsClarification(req)) {
-            return new OrchestratorResult(
+            OrchestratorResult result = new OrchestratorResult(
                     req.requestId(),
                     "我还不能确定您要处理的是哪类问题。请补充一下是订单物流、退款账单、账户资料，还是技术故障？",
                     AgentType.GENERAL,
@@ -61,14 +70,18 @@ public class AgentOrchestrator {
                     List.of(AgentType.GENERAL),
                     AgentType.GENERAL,
                     List.of(),
+                    collectToolNames(externalToolCalls),
+                    collectToolCalls(externalToolCalls),
                     "低置信度 OTHER 意图，先澄清用户需求",
                     req.intentConfidence()
             );
+            recordTrace(req, result);
+            return result;
         }
 
         RoutingDecision decision = routeDecision(req);
         if (decision.multiAgent()) {
-            return runParallel(req, decision);
+            return runParallel(req, decision, externalToolCalls);
         }
 
         AgentResponse response = execute(req, decision.primaryAgent());
@@ -76,7 +89,7 @@ public class AgentOrchestrator {
                 || req.urgency() == UrgencyLevel.CRITICAL
                 || req.intent() == IntentCategory.ESCALATION
                 || req.intent() == IntentCategory.HUMAN_HANDOFF;
-        return new OrchestratorResult(
+        OrchestratorResult result = new OrchestratorResult(
                 req.requestId(),
                 response.content(),
                 response.agentType(),
@@ -86,12 +99,24 @@ public class AgentOrchestrator {
                 List.of(response.agentType()),
                 decision.primaryAgent(),
                 List.of(),
+                collectToolNames(externalToolCalls, response),
+                collectToolCalls(externalToolCalls, response),
                 decision.reason(),
                 decision.confidence()
         );
+        recordTrace(req, result);
+        return result;
     }
 
-    private OrchestratorResult runParallel(AgentRequest req, RoutingDecision decision) {
+    public Optional<RequestToolTrace> getToolTrace(String requestId) {
+        return traceStore.find(requestId);
+    }
+
+    public List<RequestToolTrace> getRecentToolTraces(int limit) {
+        return traceStore.recent(limit);
+    }
+
+    private OrchestratorResult runParallel(AgentRequest req, RoutingDecision decision, List<ToolCallTrace> externalToolCalls) {
         Instant start = Instant.now();
         List<AgentType> targets = decision.agentTypes();
         List<CompletableFuture<AgentResponse>> futures = targets.stream()
@@ -111,7 +136,7 @@ public class AgentOrchestrator {
                 .filter(AgentResponse::success)
                 .map(AgentResponse::agentType)
                 .toList();
-        return new OrchestratorResult(
+        OrchestratorResult result = new OrchestratorResult(
                 req.requestId(),
                 content,
                 decision.primaryAgent(),
@@ -121,9 +146,13 @@ public class AgentOrchestrator {
                 agentTypes.isEmpty() ? targets : agentTypes,
                 decision.primaryAgent(),
                 decision.supportingAgents(),
+                collectToolNames(externalToolCalls, responses),
+                collectToolCalls(externalToolCalls, responses),
                 decision.reason(),
                 decision.confidence()
         );
+        recordTrace(req, result);
+        return result;
     }
 
     private AgentType route(IntentCategory intent, UrgencyLevel urgency) {
@@ -312,13 +341,83 @@ public class AgentOrchestrator {
     private AgentResponse execute(AgentRequest req, AgentType agentType) {
         BaseAgent agent = bestAgent(agentType).orElseGet(() -> bestAgent(AgentType.GENERAL).orElse(null));
         if (agent == null) {
-            return new AgentResponse(AgentType.GENERAL, "服务暂时不可用，请稍后重试。", false, 0.0, 0, false);
+            return new AgentResponse(AgentType.GENERAL, "服务暂时不可用，请稍后重试。", false, 0.0, 0, false, "", false, false, false, "service unavailable");
         }
         AgentResponse response = agent.handle(req);
         if (!response.success() && agentType != AgentType.GENERAL) {
             return bestAgent(AgentType.GENERAL).map(a -> a.handle(req)).orElse(response);
         }
         return response;
+    }
+
+    private void recordTrace(AgentRequest req, OrchestratorResult result) {
+        traceStore.record(new RequestToolTrace(
+                result.requestId(),
+                Instant.now().toString(),
+                "chat",
+                req.userId(),
+                req.conversationId(),
+                result.intent() == null ? null : result.intent().name().toLowerCase(Locale.ROOT),
+                req.intentGroup(),
+                result.agentType().name().toLowerCase(Locale.ROOT),
+                result.primaryAgent() == null ? null : result.primaryAgent().name().toLowerCase(Locale.ROOT),
+                result.supportingAgents().stream().map(a -> a.name().toLowerCase(Locale.ROOT)).toList(),
+                result.toolsUsed(),
+                result.toolCalls(),
+                result.toolsUsed().contains("search_knowledge_base") || result.toolsUsed().contains("knowledge_search"),
+                result.escalated(),
+                result.latencyMs()
+        ));
+    }
+
+    private List<ToolCallTrace> collectToolCalls(List<ToolCallTrace> externalToolCalls, AgentResponse... responses) {
+        List<ToolCallTrace> calls = new ArrayList<>();
+        if (externalToolCalls != null) {
+            calls.addAll(externalToolCalls);
+        }
+        if (responses != null) {
+            for (AgentResponse response : responses) {
+                if (response == null) {
+                    continue;
+                }
+                if (response.toolName() != null && !response.toolName().isBlank()) {
+                    calls.add(toTrace(response, response.toolName()));
+                }
+            }
+        }
+        return calls;
+    }
+
+    private List<ToolCallTrace> collectToolCalls(List<ToolCallTrace> externalToolCalls, List<AgentResponse> responses) {
+        return collectToolCalls(externalToolCalls, responses == null ? null : responses.toArray(new AgentResponse[0]));
+    }
+
+    private List<String> collectToolNames(List<ToolCallTrace> externalToolCalls, AgentResponse... responses) {
+        return collectToolCalls(externalToolCalls, responses).stream()
+                .map(ToolCallTrace::toolName)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private List<String> collectToolNames(List<ToolCallTrace> externalToolCalls, List<AgentResponse> responses) {
+        return collectToolCalls(externalToolCalls, responses).stream()
+                .map(ToolCallTrace::toolName)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private ToolCallTrace toTrace(AgentResponse response, String toolName) {
+        return new ToolCallTrace(
+                toolName == null ? "" : toolName,
+                response.success(),
+                !response.success(),
+                response.toolCached(),
+                response.toolReranked(),
+                response.latencyMs(),
+                response.toolError() == null ? "" : response.toolError()
+        );
     }
 
     private Optional<BaseAgent> bestAgent(AgentType agentType) {

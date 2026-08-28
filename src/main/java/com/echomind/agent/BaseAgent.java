@@ -2,9 +2,12 @@ package com.echomind.agent;
 
 import com.echomind.llm.LlmGateway;
 import com.echomind.skill.SkillManager;
+import com.echomind.trace.ToolCallTrace;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 public abstract class BaseAgent {
 
@@ -29,11 +32,11 @@ public abstract class BaseAgent {
             long latency = Duration.between(start, Instant.now()).toMillis();
             boolean escalate = needsEscalation(content);
             stats.record(true, latency);
-            return new AgentResponse(type(), content, true, 1.0, latency, escalate);
+            return new AgentResponse(type(), content, true, 1.0, latency, escalate, "", true, false, false, "");
         } catch (Exception ex) {
             long latency = Duration.between(start, Instant.now()).toMillis();
             stats.record(false, latency);
-            return new AgentResponse(type(), "抱歉，处理您的请求时出现问题，请稍后重试。", false, 0.0, latency, false);
+            return new AgentResponse(type(), "抱歉，处理您的请求时出现问题，请稍后重试。", false, 0.0, latency, false, "", false, false, false, ex.getMessage());
         }
     }
 

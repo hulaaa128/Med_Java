@@ -22,6 +22,7 @@ import com.echomind.monitor.PerformanceMonitor;
 import com.echomind.skill.SkillManager;
 import com.echomind.tool.KnowledgeToolManager;
 import com.echomind.tool.ToolResult;
+import com.echomind.trace.ToolCallTrace;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
@@ -99,6 +100,7 @@ public class EchoMindController {
         String conversationId = request.conversationId() == null || request.conversationId().isBlank()
                 ? UUID.randomUUID().toString()
                 : request.conversationId();
+        String requestId = UUID.randomUUID().toString().substring(0, 8);
         MemoryContext memoryContext = memoryManager.getContext(userId, conversationId, request.message());
         String memoryText = memoryContext.toPromptText(objectMapper);
         List<Map<String, String>> history = memoryContext.recentMessages().stream()
@@ -106,12 +108,28 @@ public class EchoMindController {
                 .map(m -> Map.of("role", m.role().name().toLowerCase(), "content", m.content()))
                 .toList();
         IntentResult intentResult = intentRecognizer.recognize(request.message(), history);
-        ToolResult<List<SearchResult>> knowledge = shouldUseKnowledge(intentResult.intent())
+        boolean useKnowledge = shouldUseKnowledge(intentResult.intent());
+        ToolCallTrace knowledgeTrace = null;
+        ToolResult<List<SearchResult>> knowledge = useKnowledge
                 ? knowledgeToolManager.searchWithRewrite(request.message(), 3)
                 : new ToolResult<>(true, List.of(), "knowledge_search", null, false, 0, false);
+        if (useKnowledge) {
+            knowledgeTrace = new ToolCallTrace(
+                    knowledge.toolName() == null || knowledge.toolName().isBlank() ? "knowledge_search" : knowledge.toolName(),
+                    knowledge.success(),
+                    !knowledge.success() || knowledge.error() != null,
+                    knowledge.cached(),
+                    knowledge.reranked(),
+                    knowledge.latencyMs(),
+                    knowledge.error() == null ? "" : knowledge.error()
+            );
+        }
         String knowledgeText = buildKnowledgeContext(knowledge.data());
         String fullContext = join(memoryText, knowledgeText);
-        OrchestratorResult result = orchestrator.run(AgentRequest.of(request.message(), userId, conversationId, fullContext, history, intentResult));
+        OrchestratorResult result = orchestrator.run(
+                AgentRequest.of(request.message(), userId, conversationId, fullContext, history, intentResult, requestId),
+                knowledgeTrace == null ? List.of() : List.of(knowledgeTrace)
+        );
         AnswerVerifier.VerificationResult verification = answerVerifier.verify(request.message(), result.response(), fullContext);
         boolean escalated = result.escalated() || verification.needEscalation();
         memoryManager.addMessage(userId, conversationId, MessageRole.USER, request.message());
@@ -119,6 +137,7 @@ public class EchoMindController {
         memoryManager.updateProfile(userId, conversationId);
         return new ChatResponse(
                 conversationId,
+                result.requestId(),
                 result.response(),
                 result.intent() == null ? "other" : result.intent().name().toLowerCase(),
                 intentResult.intentGroup(),
@@ -187,6 +206,20 @@ public class EchoMindController {
     @Operation(summary = "监控摘要", description = "返回 Agent 指标、工具统计、告警和优化建议。")
     public Map<String, Object> monitor() {
         return performanceMonitor.summary();
+    }
+
+    @GetMapping("/trace/tool/{requestId}")
+    @Operation(summary = "查看单次请求的工具轨迹", description = "返回指定 requestId 对应的工具调用详情。")
+    public Map<String, Object> toolTrace(@Parameter(description = "请求 ID") @org.springframework.web.bind.annotation.PathVariable String requestId) {
+        return orchestrator.getToolTrace(requestId)
+                .<Map<String, Object>>map(trace -> Map.of("found", true, "trace", trace))
+                .orElseGet(() -> Map.of("found", false, "trace", Map.of()));
+    }
+
+    @GetMapping("/trace/tools")
+    @Operation(summary = "查看最近工具轨迹", description = "返回最近 N 次请求的工具调用详情。")
+    public Map<String, Object> recentToolTraces(@RequestParam(defaultValue = "20") int limit) {
+        return Map.of("items", orchestrator.getRecentToolTraces(limit));
     }
 
     @GetMapping("/skills")

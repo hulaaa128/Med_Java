@@ -6,6 +6,11 @@ public record AgentResponse(
         boolean success,
         double confidence,
         long latencyMs,
-        boolean escalate
+        boolean escalate,
+        String toolName,
+        boolean toolSuccess,
+        boolean toolCached,
+        boolean toolReranked,
+        String toolError
 ) {
 }

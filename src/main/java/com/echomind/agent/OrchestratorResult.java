@@ -1,6 +1,7 @@
 package com.echomind.agent;
 
 import com.echomind.intent.IntentCategory;
+import com.echomind.trace.ToolCallTrace;
 
 import java.util.List;
 
@@ -14,6 +15,8 @@ public record OrchestratorResult(
         List<AgentType> agentTypes,
         AgentType primaryAgent,
         List<AgentType> supportingAgents,
+        List<String> toolsUsed,
+        List<ToolCallTrace> toolCalls,
         String routingReason,
         double routingConfidence
 ) {

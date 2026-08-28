@@ -11,6 +11,9 @@ public record ChatResponse(
         @Schema(description = "会话 ID", example = "conv-001")
         @JsonProperty("conv_id")
         String conversationId,
+        @Schema(description = "请求 ID", example = "a1b2c3d4")
+        @JsonProperty("request_id")
+        String requestId,
         @Schema(description = "客服回复")
         String response,
         @Schema(description = "识别出的意图", example = "billing")

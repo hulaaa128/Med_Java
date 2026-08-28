@@ -38,7 +38,7 @@ public record AgentRequest(
     }
 
     public static AgentRequest of(String message, String userId, String conversationId, String context, List<Map<String, String>> history) {
-        return new AgentRequest(message, userId, conversationId, context, history, Map.of(), null, null, null, 1.0, newRequestId());
+        return of(message, userId, conversationId, context, history, null, newRequestId());
     }
 
     public static AgentRequest of(
@@ -49,18 +49,30 @@ public record AgentRequest(
             List<Map<String, String>> history,
             IntentResult intentResult
     ) {
+        return of(message, userId, conversationId, context, history, intentResult, newRequestId());
+    }
+
+    public static AgentRequest of(
+            String message,
+            String userId,
+            String conversationId,
+            String context,
+            List<Map<String, String>> history,
+            IntentResult intentResult,
+            String requestId
+    ) {
         return new AgentRequest(
                 message,
                 userId,
                 conversationId,
                 context,
                 history,
-                intentResult.entities(),
-                intentResult.intent(),
-                intentResult.intentGroup(),
-                intentResult.urgency(),
-                intentResult.confidence(),
-                newRequestId()
+                intentResult == null ? Map.of() : intentResult.entities(),
+                intentResult == null ? null : intentResult.intent(),
+                intentResult == null ? null : intentResult.intentGroup(),
+                intentResult == null ? null : intentResult.urgency(),
+                intentResult == null ? 1.0 : intentResult.confidence(),
+                requestId == null || requestId.isBlank() ? newRequestId() : requestId
         );
     }
 
