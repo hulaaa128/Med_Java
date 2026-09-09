@@ -3,6 +3,10 @@ package com.echomind.intent;
 import com.echomind.llm.LlmGateway;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.embedding.EmbeddingModel;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -15,6 +19,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,6 +27,7 @@ import java.util.regex.Pattern;
 @Service
 public class IntentRecognizer {
 
+    private static final Logger log = LoggerFactory.getLogger(IntentRecognizer.class);
     private static final double CONFIDENCE_THRESHOLD = 0.5;
 
     private static final Map<IntentCategory, List<String>> TEMPLATES = Map.ofEntries(
@@ -79,11 +85,17 @@ public class IntentRecognizer {
 
     private final LlmGateway llmGateway;
     private final ObjectMapper objectMapper;
+    private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final Map<String, IntentResult> cache = new ConcurrentHashMap<>();
+    private final Object templateEmbeddingLock = new Object();
+    private volatile Map<IntentCategory, List<float[]>> templateEmbeddings;
 
-    public IntentRecognizer(LlmGateway llmGateway, ObjectMapper objectMapper) {
+    public IntentRecognizer(LlmGateway llmGateway,
+                            ObjectMapper objectMapper,
+                            ObjectProvider<EmbeddingModel> embeddingModelProvider) {
         this.llmGateway = llmGateway;
         this.objectMapper = objectMapper;
+        this.embeddingModelProvider = embeddingModelProvider;
     }
 
     public IntentResult recognize(String message, List<Map<String, String>> history) {
@@ -93,10 +105,14 @@ public class IntentRecognizer {
             return cached;
         }
         Instant start = Instant.now();
-        Map<String, Object> llm = llmRecognize(message, history);
-        Map<String, Object> semantic = semanticRecognize(message);
         Map<String, Object> pattern = patternRecognize(message);
-        VoteResult vote = vote(llm, semantic, pattern);
+        CompletableFuture<Map<String, Object>> llmFuture = CompletableFuture.supplyAsync(
+                () -> llmRecognize(message, history));
+        CompletableFuture<Map<String, Object>> embeddingFuture = CompletableFuture.supplyAsync(
+                () -> embeddingRecognize(message));
+        Map<String, Object> llm = llmFuture.join();
+        Map<String, Object> embedding = embeddingFuture.join();
+        VoteResult vote = vote(llm, embedding, pattern);
         IntentCategory intent = vote.intent();
         UrgencyLevel urgency = urgency(message, intent);
         IntentResult result = new IntentResult(
@@ -139,6 +155,9 @@ public class IntentRecognizer {
             String json = sliceJsonObject(raw);
             Map<String, Object> data = objectMapper.readValue(json, new TypeReference<>() {
             });
+            if (!data.containsKey("intent") || !(data.get("confidence") instanceof Number)) {
+                throw new IllegalArgumentException("LLM did not return a valid intent result");
+            }
             data.put("intent", parseIntent(String.valueOf(data.get("intent"))));
             return data;
         } catch (Exception ex) {
@@ -151,7 +170,61 @@ public class IntentRecognizer {
         }
     }
 
-    private Map<String, Object> semanticRecognize(String message) {
+    private Map<String, Object> embeddingRecognize(String message) {
+        try {
+            EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
+            if (embeddingModel == null) {
+                throw new IllegalStateException("EmbeddingModel is not configured");
+            }
+            float[] messageEmbedding = embeddingModel.embed(message == null ? "" : message);
+            Map<IntentCategory, List<float[]>> embeddings = loadTemplateEmbeddings(embeddingModel);
+            IntentCategory best = IntentCategory.OTHER;
+            double bestScore = 0.0;
+            for (Map.Entry<IntentCategory, List<float[]>> entry : embeddings.entrySet()) {
+                for (float[] templateEmbedding : entry.getValue()) {
+                    double score = cosine(messageEmbedding, templateEmbedding);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = entry.getKey();
+                    }
+                }
+            }
+            return Map.of("intent", best, "confidence", clamp(bestScore), "fallback", false);
+        } catch (Exception ex) {
+            log.warn("Embedding intent recognition failed, using char n-gram fallback: {}", message(ex));
+            Map<String, Object> fallback = new HashMap<>(ngramRecognize(message));
+            fallback.put("fallback", true);
+            return fallback;
+        }
+    }
+
+    private Map<IntentCategory, List<float[]>> loadTemplateEmbeddings(EmbeddingModel embeddingModel) {
+        Map<IntentCategory, List<float[]>> cached = templateEmbeddings;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (templateEmbeddingLock) {
+            if (templateEmbeddings != null) {
+                return templateEmbeddings;
+            }
+            List<String> texts = TEMPLATES.values().stream().flatMap(List::stream).toList();
+            List<float[]> vectors = embeddingModel.embed(texts);
+            if (vectors == null || vectors.size() != texts.size()) {
+                throw new IllegalStateException("EmbeddingModel returned an unexpected template vector count");
+            }
+            Map<IntentCategory, List<float[]>> loaded = new EnumMap<>(IntentCategory.class);
+            int offset = 0;
+            for (Map.Entry<IntentCategory, List<String>> entry : TEMPLATES.entrySet()) {
+                int size = entry.getValue().size();
+                loaded.put(entry.getKey(), List.copyOf(vectors.subList(offset, offset + size)));
+                offset += size;
+            }
+            templateEmbeddings = Map.copyOf(loaded);
+            return templateEmbeddings;
+        }
+    }
+
+    private Map<String, Object> ngramRecognize(String message) {
         IntentCategory best = IntentCategory.OTHER;
         double bestScore = 0.0;
         for (Map.Entry<IntentCategory, List<String>> entry : TEMPLATES.entrySet()) {
@@ -164,6 +237,28 @@ public class IntentRecognizer {
             }
         }
         return Map.of("intent", best, "confidence", bestScore);
+    }
+
+    private double cosine(float[] left, float[] right) {
+        if (left == null || right == null || left.length == 0 || left.length != right.length) {
+            return 0.0;
+        }
+        double dot = 0.0;
+        double leftNorm = 0.0;
+        double rightNorm = 0.0;
+        for (int i = 0; i < left.length; i++) {
+            dot += left[i] * right[i];
+            leftNorm += left[i] * left[i];
+            rightNorm += right[i] * right[i];
+        }
+        if (leftNorm == 0.0 || rightNorm == 0.0) {
+            return 0.0;
+        }
+        return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
+    }
+
+    private double clamp(double value) {
+        return Math.max(0.0, Math.min(1.0, value));
     }
 
     private Map<String, Object> patternRecognize(String message) {
@@ -213,24 +308,28 @@ public class IntentRecognizer {
         return Map.of("intent", best, "confidence", bestScore);
     }
 
-    private VoteResult vote(Map<String, Object> llm, Map<String, Object> semantic, Map<String, Object> pattern) {
+    private VoteResult vote(Map<String, Object> llm, Map<String, Object> embedding, Map<String, Object> pattern) {
         Map<String, Double> sourceScores = new LinkedHashMap<>();
         sourceScores.put("llm", confidence(llm));
-        sourceScores.put("embedding", confidence(semantic));
+        boolean embeddingFallback = Boolean.TRUE.equals(embedding.get("fallback"));
+        sourceScores.put("embedding", embeddingFallback ? 0.0 : confidence(embedding));
+        if (embeddingFallback) {
+            sourceScores.put("ngram_fallback", confidence(embedding));
+        }
         sourceScores.put("pattern", confidence(pattern));
 
         if (Boolean.TRUE.equals(llm.get("failed"))) {
-            if (semantic.get("intent") != IntentCategory.OTHER && confidence(semantic) > 0) {
-                return new VoteResult((IntentCategory) semantic.get("intent"), confidence(semantic), sourceScores);
+            Map<String, Object> fallback = confidence(embedding) >= confidence(pattern) ? embedding : pattern;
+            IntentCategory fallbackIntent = (IntentCategory) fallback.getOrDefault("intent", IntentCategory.OTHER);
+            double fallbackConfidence = confidence(fallback);
+            if (fallbackIntent == IntentCategory.OTHER || fallbackConfidence < CONFIDENCE_THRESHOLD) {
+                return new VoteResult(IntentCategory.OTHER, fallbackConfidence, sourceScores);
             }
-            if (pattern.get("intent") != IntentCategory.OTHER && confidence(pattern) > 0) {
-                return new VoteResult((IntentCategory) pattern.get("intent"), confidence(pattern), sourceScores);
-            }
-            return new VoteResult(IntentCategory.OTHER, 0.0, sourceScores);
+            return new VoteResult(fallbackIntent, fallbackConfidence, sourceScores);
         }
         Map<IntentCategory, Double> scores = new EnumMap<>(IntentCategory.class);
         addScore(scores, llm, 0.70);
-        addScore(scores, semantic, 0.20);
+        addScore(scores, embedding, 0.20);
         addScore(scores, pattern, 0.10);
         Map.Entry<IntentCategory, Double> best = scores.entrySet().stream()
                 .max(Map.Entry.comparingByValue())
@@ -257,7 +356,12 @@ public class IntentRecognizer {
     }
 
     private double confidence(Map<String, Object> result) {
-        return ((Number) result.getOrDefault("confidence", 0.0)).doubleValue();
+        Object value = result.get("confidence");
+        return value instanceof Number number ? clamp(number.doubleValue()) : 0.0;
+    }
+
+    private String message(Exception ex) {
+        return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
     }
 
     private Map<String, List<String>> extractEntities(String message) {

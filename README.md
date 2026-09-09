@@ -53,7 +53,7 @@ POST /chat
 | Agent 类型 | General / Technical / Billing | General / Technical / Billing | 已对齐 |
 | Agent 路由 | 意图路由 + 性能路由 + 降级 | 意图路由 + 性能路由 + 降级 | 已对齐 |
 | 复合问题并行处理 | 支持 | 支持 | 已对齐 |
-| 意图识别 | LLM + embedding/hash + pattern | LLM + char n-gram semantic + pattern | 基本对齐 |
+| 意图识别 | LLM + embedding/hash + pattern | LLM Few-shot + BGE-M3 Embedding + pattern，字符 n-gram 降级 | 已对齐并支持并行识别 |
 | 工作记忆 | Redis | Redis | 已对齐 |
 | 情景记忆 | ChromaDB `episodic` collection | JSON 持久化 + 本地向量检索 | 功能对齐，存储不同 |
 | 用户画像 | ChromaDB `user_profile` collection | JSON 持久化 | 功能对齐，存储不同 |
