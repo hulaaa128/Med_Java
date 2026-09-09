@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Primary;
 import org.springframework.web.client.RestClient;
 
 @Configuration(proxyBeanMethods = false)
@@ -32,9 +33,10 @@ public class ChromaVectorStoreConfig {
                 .build();
     }
 
-    @Bean
+    @Bean("knowledgeVectorStore")
     @Lazy
-    VectorStore echomindChromaVectorStore(
+    @Primary
+    VectorStore knowledgeVectorStore(
             ChromaApi echomindChromaApi,
             EmbeddingModel embeddingModel,
             @Value("${spring.ai.vectorstore.chroma.collection-name:echomind_knowledge}") String collectionName,
@@ -42,7 +44,46 @@ public class ChromaVectorStoreConfig {
             @Value("${spring.ai.vectorstore.chroma.database-name:default_database}") String databaseName,
             @Value("${spring.ai.vectorstore.chroma.initialize-schema:true}") boolean initializeSchema,
             ObjectProvider<ObservationRegistry> observationRegistryProvider) {
-        return ChromaVectorStore.builder(echomindChromaApi, embeddingModel)
+        return vectorStore(echomindChromaApi, embeddingModel, collectionName, tenantName, databaseName,
+                initializeSchema, observationRegistryProvider);
+    }
+
+    @Bean("episodicVectorStore")
+    @Lazy
+    VectorStore episodicVectorStore(
+            ChromaApi echomindChromaApi,
+            EmbeddingModel embeddingModel,
+            @Value("${echomind.memory.episodic-collection:echomind_episodic}") String collectionName,
+            @Value("${spring.ai.vectorstore.chroma.tenant-name:default_tenant}") String tenantName,
+            @Value("${spring.ai.vectorstore.chroma.database-name:default_database}") String databaseName,
+            @Value("${spring.ai.vectorstore.chroma.initialize-schema:true}") boolean initializeSchema,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        return vectorStore(echomindChromaApi, embeddingModel, collectionName, tenantName, databaseName,
+                initializeSchema, observationRegistryProvider);
+    }
+
+    @Bean("profileVectorStore")
+    @Lazy
+    VectorStore profileVectorStore(
+            ChromaApi echomindChromaApi,
+            EmbeddingModel embeddingModel,
+            @Value("${echomind.memory.profile-collection:echomind_user_profile}") String collectionName,
+            @Value("${spring.ai.vectorstore.chroma.tenant-name:default_tenant}") String tenantName,
+            @Value("${spring.ai.vectorstore.chroma.database-name:default_database}") String databaseName,
+            @Value("${spring.ai.vectorstore.chroma.initialize-schema:true}") boolean initializeSchema,
+            ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        return vectorStore(echomindChromaApi, embeddingModel, collectionName, tenantName, databaseName,
+                initializeSchema, observationRegistryProvider);
+    }
+
+    private VectorStore vectorStore(ChromaApi chromaApi,
+                                    EmbeddingModel embeddingModel,
+                                    String collectionName,
+                                    String tenantName,
+                                    String databaseName,
+                                    boolean initializeSchema,
+                                    ObjectProvider<ObservationRegistry> observationRegistryProvider) {
+        return ChromaVectorStore.builder(chromaApi, embeddingModel)
                 .collectionName(collectionName)
                 .tenantName(tenantName)
                 .databaseName(databaseName)

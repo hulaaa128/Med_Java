@@ -17,7 +17,7 @@ EchoMind Java 是 Python 版 EchoMind 的 Java/Spring 技术栈重构版，目�
 | 文档处理 | LangChain4j DocumentSplitter |
 | 记忆缓存 | Spring Data Redis |
 | RAG | BGE-M3 + ChromaDB 向量检索 + BM25 + RRF + LLM rerank |
-| 持久化 | Redis 工作记忆 + JSON 知识文档/长期记忆/用户画像 + ChromaDB 向量索引 |
+| 持久化 | Redis 工作记忆 + ChromaDB 知识库/情景记忆/用户画像 + JSON 灾备快照 |
 | 监控 | Spring Boot Actuator、Micrometer、Prometheus |
 | API 文档 | Springdoc OpenAPI、Swagger UI |
 | 部署 | Docker、Docker Compose、Nginx、Prometheus |
@@ -55,8 +55,8 @@ POST /chat
 | 复合问题并行处理 | 支持 | 支持 | 已对齐 |
 | 意图识别 | LLM + embedding/hash + pattern | LLM Few-shot + BGE-M3 Embedding + pattern，字符 n-gram 降级 | 已对齐并支持并行识别 |
 | 工作记忆 | Redis | Redis | 已对齐 |
-| 情景记忆 | ChromaDB `episodic` collection | JSON 持久化 + 本地向量检索 | 功能对齐，存储不同 |
-| 用户画像 | ChromaDB `user_profile` collection | JSON 持久化 | 功能对齐，存储不同 |
+| 情景记忆 | ChromaDB `episodic` collection | ChromaDB `echomind_episodic` + JSON 降级 | 已对齐 |
+| 用户画像 | ChromaDB `user_profile` collection | ChromaDB `echomind_user_profile` + JSON 降级 | 已对齐 |
 | 知识库 | ChromaDB `knowledge_base` collection | JSON 文档持久化 + ChromaDB/BM25 Hybrid RAG | 已对齐并增加 BM25/RRF 降级链路 |
 | 查询改写 | LLM 改写 | LLM 改写 | 已对齐 |
 | 检索重排 | LLM rerank | LLM rerank，失败回退融合分 | 已对齐 |
@@ -108,8 +108,10 @@ Python 版：
 Java 版：
 
 - Redis 保存工作记忆。
-- `data/java/memory-store.json` 保存情景记忆和用户画像。
-- `data/java/knowledge-store.json` 保存知识库片段。
+- ChromaDB `echomind_episodic` 保存对话压缩摘要，并通过 BGE-M3 语义召回跨会话记忆。
+- ChromaDB `echomind_user_profile` 保存 LLM 异步提取的结构化用户画像。
+- `data/java/memory-store.json` 保留情景记忆和用户画像的本地降级快照。
+- `data/java/knowledge-store.json` 保存知识库片段并用于重建向量索引。
 - Docker 中保存到 `/app/data/java`，由 `app-data` volume 持久化。
 
 配置项：
@@ -119,9 +121,11 @@ ECHOMIND_DATA_DIR=data/java
 KNOWLEDGE_STORE_PATH=data/java/knowledge-store.json
 MEMORY_STORE_PATH=data/java/memory-store.json
 EVAL_BASELINE_PATH=data/eval/baseline.json
+MEMORY_EPISODIC_COLLECTION=echomind_episodic
+MEMORY_PROFILE_COLLECTION=echomind_user_profile
 ```
 
-当前知识文档以 JSON 作为可恢复的本地数据源，导入和启动时同步写入 ChromaDB 向量索引。应用重启后可从 JSON 恢复知识文档，并重建 ChromaDB 索引；长期记忆和用户画像仍持久化在 `memory-store.json`。
+记忆链路默认优先读写 ChromaDB；Embedding 或 ChromaDB 异常时，会回退到 `memory-store.json` 与本地字符向量检索，不影响 Redis 工作记忆和主对话链路。
 
 ### Hybrid RAG
 

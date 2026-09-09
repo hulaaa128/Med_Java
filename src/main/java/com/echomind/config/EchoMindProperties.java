@@ -57,6 +57,11 @@ public class EchoMindProperties {
         private long ttlSeconds = 86400;
         private int workingMax = 20;
         private int compressAt = 15;
+        private int keepRecent = 5;
+        private int episodicTopK = 5;
+        private double episodicSimilarityThreshold = 0.5;
+        private String episodicCollection = "echomind_episodic";
+        private String profileCollection = "echomind_user_profile";
 
         public long getTtlSeconds() {
             return ttlSeconds;
@@ -80,6 +85,46 @@ public class EchoMindProperties {
 
         public void setCompressAt(int compressAt) {
             this.compressAt = compressAt;
+        }
+
+        public int getKeepRecent() {
+            return keepRecent;
+        }
+
+        public void setKeepRecent(int keepRecent) {
+            this.keepRecent = keepRecent;
+        }
+
+        public int getEpisodicTopK() {
+            return episodicTopK;
+        }
+
+        public void setEpisodicTopK(int episodicTopK) {
+            this.episodicTopK = episodicTopK;
+        }
+
+        public double getEpisodicSimilarityThreshold() {
+            return episodicSimilarityThreshold;
+        }
+
+        public void setEpisodicSimilarityThreshold(double episodicSimilarityThreshold) {
+            this.episodicSimilarityThreshold = episodicSimilarityThreshold;
+        }
+
+        public String getEpisodicCollection() {
+            return episodicCollection;
+        }
+
+        public void setEpisodicCollection(String episodicCollection) {
+            this.episodicCollection = episodicCollection;
+        }
+
+        public String getProfileCollection() {
+            return profileCollection;
+        }
+
+        public void setProfileCollection(String profileCollection) {
+            this.profileCollection = profileCollection;
         }
     }
 

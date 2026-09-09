@@ -7,18 +7,26 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -31,14 +39,23 @@ public class MemoryManager {
     private final ObjectMapper objectMapper;
     private final EchoMindProperties properties;
     private final LlmGateway llmGateway;
+    private final ObjectProvider<VectorStore> episodicVectorStoreProvider;
+    private final ObjectProvider<VectorStore> profileVectorStoreProvider;
     private final List<EpisodicEntry> episodicStore = new CopyOnWriteArrayList<>();
     private final Map<String, Map<String, Object>> profileStore = new ConcurrentHashMap<>();
 
-    public MemoryManager(StringRedisTemplate redisTemplate, ObjectMapper objectMapper, EchoMindProperties properties, LlmGateway llmGateway) {
+    public MemoryManager(StringRedisTemplate redisTemplate,
+                         ObjectMapper objectMapper,
+                         EchoMindProperties properties,
+                         LlmGateway llmGateway,
+                         @Qualifier("episodicVectorStore") ObjectProvider<VectorStore> episodicVectorStoreProvider,
+                         @Qualifier("profileVectorStore") ObjectProvider<VectorStore> profileVectorStoreProvider) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.llmGateway = llmGateway;
+        this.episodicVectorStoreProvider = episodicVectorStoreProvider;
+        this.profileVectorStoreProvider = profileVectorStoreProvider;
     }
 
     @PostConstruct
@@ -49,7 +66,7 @@ public class MemoryManager {
     public MemoryContext getContext(String userId, String conversationId, String query) {
         List<ConversationMessage> recent = getWorkingMemory(userId, conversationId);
         List<String> relevantHistory = searchEpisodic(userId, query);
-        Map<String, Object> profile = profileStore.getOrDefault(userId, Map.of());
+        Map<String, Object> profile = loadProfile(userId, query);
         String summary = safeRedisGet(summaryKey(userId, conversationId));
         return new MemoryContext(recent, relevantHistory, profile, summary == null ? "" : summary);
     }
@@ -89,6 +106,7 @@ public class MemoryManager {
             Map<String, Object> profile = objectMapper.readValue(sliceJson(raw), new TypeReference<>() {
             });
             profileStore.put(userId, profile);
+            storeProfile(userId, profile);
             persistMemory();
         } catch (Exception ex) {
             log.warn("Profile update failed: {}", ex.getMessage());
@@ -118,7 +136,7 @@ public class MemoryManager {
         if (messages.size() < properties.getMemory().getCompressAt()) {
             return;
         }
-        int keep = Math.min(5, messages.size());
+        int keep = Math.min(Math.max(1, properties.getMemory().getKeepRecent()), messages.size());
         List<ConversationMessage> oldMessages = messages.subList(0, messages.size() - keep);
         List<ConversationMessage> keepMessages = messages.subList(messages.size() - keep, messages.size());
         String text = oldMessages.stream()
@@ -131,7 +149,9 @@ public class MemoryManager {
         } catch (Exception ex) {
             summary = "对话包含 " + oldMessages.size() + " 条历史消息。";
         }
-        episodicStore.add(new EpisodicEntry(userId, conversationId, summary, text, Instant.now(), embed(summary)));
+        Instant timestamp = Instant.now();
+        episodicStore.add(new EpisodicEntry(userId, conversationId, summary, text, timestamp, embed(summary)));
+        storeEpisodic(userId, conversationId, summary, text, timestamp);
         persistMemory();
         String key = wmKey(userId, conversationId);
         try {
@@ -152,13 +172,101 @@ public class MemoryManager {
         if (query == null || query.isBlank()) {
             return List.of();
         }
+        try {
+            VectorStore vectorStore = episodicVectorStoreProvider.getIfAvailable();
+            if (vectorStore != null) {
+                FilterExpressionBuilder filters = new FilterExpressionBuilder();
+                SearchRequest request = SearchRequest.builder()
+                        .query(query)
+                        .topK(Math.max(1, properties.getMemory().getEpisodicTopK()))
+                        .similarityThreshold(properties.getMemory().getEpisodicSimilarityThreshold())
+                        .filterExpression(filters.eq("user_id", safe(userId)).build())
+                        .build();
+                List<Document> matches = vectorStore.similaritySearch(request);
+                if (matches != null && !matches.isEmpty()) {
+                    return matches.stream()
+                            .map(Document::getText)
+                            .filter(text -> text != null && !text.isBlank())
+                            .toList();
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Chroma episodic search failed, using local fallback: {}", ex.getMessage());
+        }
         double[] queryVec = embed(query);
         return episodicStore.stream()
                 .filter(e -> e.userId().equals(userId))
                 .sorted(Comparator.comparingDouble((EpisodicEntry e) -> cosine(queryVec, e.embedding())).reversed())
-                .limit(5)
+                .limit(Math.max(1, properties.getMemory().getEpisodicTopK()))
                 .map(EpisodicEntry::summary)
                 .toList();
+    }
+
+    private void storeEpisodic(String userId,
+                               String conversationId,
+                               String summary,
+                               String fullText,
+                               Instant timestamp) {
+        try {
+            VectorStore vectorStore = episodicVectorStoreProvider.getIfAvailable();
+            if (vectorStore == null) {
+                return;
+            }
+            String id = UUID.randomUUID().toString();
+            Map<String, Object> metadata = Map.of(
+                    "memory_type", "episodic",
+                    "user_id", safe(userId),
+                    "conversation_id", safe(conversationId),
+                    "timestamp", timestamp.toString(),
+                    "message_count", fullText == null || fullText.isBlank() ? 0 : fullText.lines().count()
+            );
+            vectorStore.add(List.of(new Document(id, summary, metadata)));
+        } catch (Exception ex) {
+            log.warn("Chroma episodic write failed, local fallback remains available: {}", ex.getMessage());
+        }
+    }
+
+    private Map<String, Object> loadProfile(String userId, String query) {
+        try {
+            VectorStore vectorStore = profileVectorStoreProvider.getIfAvailable();
+            if (vectorStore != null) {
+                FilterExpressionBuilder filters = new FilterExpressionBuilder();
+                SearchRequest request = SearchRequest.builder()
+                        .query(query == null || query.isBlank() ? "用户画像" : query)
+                        .topK(1)
+                        .similarityThresholdAll()
+                        .filterExpression(filters.eq("user_id", safe(userId)).build())
+                        .build();
+                List<Document> matches = vectorStore.similaritySearch(request);
+                if (matches != null && !matches.isEmpty()) {
+                    Map<String, Object> profile = objectMapper.readValue(matches.getFirst().getText(), new TypeReference<>() {
+                    });
+                    profileStore.put(userId, profile);
+                    return profile;
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("Chroma profile read failed, using local fallback: {}", ex.getMessage());
+        }
+        return profileStore.getOrDefault(userId, Map.of());
+    }
+
+    private void storeProfile(String userId, Map<String, Object> profile) {
+        try {
+            VectorStore vectorStore = profileVectorStoreProvider.getIfAvailable();
+            if (vectorStore == null) {
+                return;
+            }
+            String id = UUID.nameUUIDFromBytes(("profile:" + safe(userId)).getBytes(StandardCharsets.UTF_8)).toString();
+            Map<String, Object> metadata = Map.of(
+                    "memory_type", "user_profile",
+                    "user_id", safe(userId),
+                    "updated_at", Instant.now().toString()
+            );
+            vectorStore.add(List.of(new Document(id, objectMapper.writeValueAsString(profile), metadata)));
+        } catch (Exception ex) {
+            log.warn("Chroma profile write failed, local fallback remains available: {}", ex.getMessage());
+        }
     }
 
     private String safeRedisGet(String key) {
