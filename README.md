@@ -16,8 +16,8 @@ EchoMind Java 是 Python 版 EchoMind 的 Java/Spring 技术栈重构版，目�
 | LLM Provider | Anthropic、DeepSeek |
 | 文档处理 | LangChain4j DocumentSplitter |
 | 记忆缓存 | Spring Data Redis |
-| RAG | BM25 + 本地 hash vector + LLM rerank |
-| 持久化 | Redis 工作记忆 + JSON 知识库/长期记忆/用户画像 |
+| RAG | BGE-M3 + ChromaDB 向量检索 + BM25 + RRF + LLM rerank |
+| 持久化 | Redis 工作记忆 + JSON 知识文档/长期记忆/用户画像 + ChromaDB 向量索引 |
 | 监控 | Spring Boot Actuator、Micrometer、Prometheus |
 | API 文档 | Springdoc OpenAPI、Swagger UI |
 | 部署 | Docker、Docker Compose、Nginx、Prometheus |
@@ -53,11 +53,11 @@ POST /chat
 | Agent 类型 | General / Technical / Billing | General / Technical / Billing | 已对齐 |
 | Agent 路由 | 意图路由 + 性能路由 + 降级 | 意图路由 + 性能路由 + 降级 | 已对齐 |
 | 复合问题并行处理 | 支持 | 支持 | 已对齐 |
-| 意图识别 | LLM + embedding/hash + pattern | LLM + char n-gram semantic + pattern | 基本对齐 |
+| 意图识别 | LLM + embedding/hash + pattern | LLM Few-shot + BGE-M3 Embedding + pattern，字符 n-gram 降级 | 已对齐并支持并行识别 |
 | 工作记忆 | Redis | Redis | 已对齐 |
 | 情景记忆 | ChromaDB `episodic` collection | JSON 持久化 + 本地向量检索 | 功能对齐，存储不同 |
 | 用户画像 | ChromaDB `user_profile` collection | JSON 持久化 | 功能对齐，存储不同 |
-| 知识库 | ChromaDB `knowledge_base` collection | JSON 持久化 Hybrid RAG | 功能对齐，主检索实现不同 |
+| 知识库 | ChromaDB `knowledge_base` collection | JSON 文档持久化 + ChromaDB/BM25 Hybrid RAG | 已对齐并增加 BM25/RRF 降级链路 |
 | 查询改写 | LLM 改写 | LLM 改写 | 已对齐 |
 | 检索重排 | LLM rerank | LLM rerank，失败回退融合分 | 已对齐 |
 | 工具框架 | 通用 MCPToolManager | 专用 KnowledgeToolManager | 部分对齐 |
@@ -121,7 +121,7 @@ MEMORY_STORE_PATH=data/java/memory-store.json
 EVAL_BASELINE_PATH=data/eval/baseline.json
 ```
 
-当前用户可见效果已经对齐：应用重启后，导入的知识库、长期记忆和画像可以恢复。底层差异仍然存在：Java 没有直接写入 ChromaDB collection，而是 JSON 持久化 + 本地 hash vector 检索。
+当前知识文档以 JSON 作为可恢复的本地数据源，导入和启动时同步写入 ChromaDB 向量索引。应用重启后可从 JSON 恢复知识文档，并重建 ChromaDB 索引；长期记忆和用户画像仍持久化在 `memory-store.json`。
 
 ### Hybrid RAG
 
@@ -133,19 +133,21 @@ Java 版当前检索链路：
 文档导入
   -> LangChain4j recursive splitter
   -> JSON 持久化
-  -> 本地 documents 索引
+  -> BGE-M3 生成 Embedding
+  -> upsert 到 ChromaDB
+  -> 同步更新本地 BM25 文档集
 
 查询
   -> LLM 查询改写
   -> 多子查询并行召回
-  -> BM25 关键词得分
-  -> 本地 hash vector 语义得分
-  -> 加权融合
+  -> BM25 关键词召回 + ChromaDB 向量召回
+  -> 加权 RRF 融合与 Chunk 去重
   -> LLM rerank
   -> fallback 到融合分排序
+  -> 向量服务异常时降级为 BM25-only
 ```
 
-这比 Python 版多了 BM25 + vector 融合检索，但没有把 ChromaDB 作为主召回源。
+正常情况下使用 ChromaDB 与 BM25 混合召回；Embedding 或 ChromaDB 不可用时保留本地 BM25 检索能力。
 
 ### 评测和监控
 
@@ -212,22 +214,16 @@ Java 版当前是专用 `KnowledgeToolManager`，只服务 `knowledge_search`，
 - `ToolExecutor`
 - JSON Schema validator
 
-### ChromaDB 不是 Java 版主检索源
+### ChromaDB 与 BM25 混合检索
 
-Java 版保留 ChromaDB 容器，并引入了 Spring AI Chroma VectorStore starter，但当前 profile 中排除了 Chroma VectorStore 自动配置，主检索仍然走本地 Hybrid RAG。
-
-原因：
-
-- DeepSeek Chat starter 不提供 EmbeddingModel。
-- 当前实现优先保证 DeepSeek / Anthropic 都能启动和运行。
-
-后续可增强为：
+Java 版使用 Ollama `bge-m3` 提供 `EmbeddingModel`，通过 Spring AI `ChromaVectorStore` 写入和检索知识片段。查询时同时执行 ChromaDB 语义召回和本地 BM25 关键词召回，使用加权 RRF 融合排名：
 
 ```text
 ChromaDB VectorStore semantic search
   + BM25 keyword recall
-  + RRF / weighted fusion
+  + weighted RRF fusion
   + LLM rerank
+  + BM25-only fallback
 ```
 
 ### CLI 模式未迁移
@@ -322,7 +318,8 @@ Java 版配置了 Jackson `SNAKE_CASE`，响应字段会输出为：
 启动依赖：
 
 ```bash
-docker compose up -d redis chromadb
+docker compose up -d redis chromadb ollama
+docker compose exec ollama ollama pull bge-m3
 ```
 
 DeepSeek 启动：
@@ -358,7 +355,8 @@ http://localhost:8080/docs
 启动依赖：
 
 ```powershell
-docker compose up -d redis chromadb
+docker compose up -d redis chromadb ollama
+docker compose exec ollama ollama pull bge-m3
 ```
 
 DeepSeek 启动：
@@ -437,6 +435,7 @@ Compose 服务和端口：
 | Nginx | `echomind-java-nginx` | `http://localhost:8081` |
 | Prometheus | `echomind-java-prometheus` | `http://localhost:9091` |
 | ChromaDB | `echomind-java-chromadb` | `http://localhost:8002` |
+| Ollama / BGE-M3 | `echomind-java-ollama` | `http://localhost:11434` |
 | Redis | `echomind-java-redis` | `localhost:6380` |
 
 常用验证：

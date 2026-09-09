@@ -7,7 +7,6 @@ public record KnowledgeDocument(
         String title,
         String content,
         int chunkIndex,
-        Map<String, Object> metadata,
-        double[] embedding
+        Map<String, Object> metadata
 ) {
 }

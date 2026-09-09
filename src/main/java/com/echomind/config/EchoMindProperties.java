@@ -87,6 +87,10 @@ public class EchoMindProperties {
         private int topK = 4;
         private double bm25Weight = 0.45;
         private double vectorWeight = 0.55;
+        private int rrfK = 60;
+        private int recallMultiplier = 3;
+        private double similarityThreshold = 0.0;
+        private boolean vectorEnabled = true;
 
         public int getTopK() {
             return topK;
@@ -110,6 +114,38 @@ public class EchoMindProperties {
 
         public void setVectorWeight(double vectorWeight) {
             this.vectorWeight = vectorWeight;
+        }
+
+        public int getRrfK() {
+            return rrfK;
+        }
+
+        public void setRrfK(int rrfK) {
+            this.rrfK = rrfK;
+        }
+
+        public int getRecallMultiplier() {
+            return recallMultiplier;
+        }
+
+        public void setRecallMultiplier(int recallMultiplier) {
+            this.recallMultiplier = recallMultiplier;
+        }
+
+        public double getSimilarityThreshold() {
+            return similarityThreshold;
+        }
+
+        public void setSimilarityThreshold(double similarityThreshold) {
+            this.similarityThreshold = similarityThreshold;
+        }
+
+        public boolean isVectorEnabled() {
+            return vectorEnabled;
+        }
+
+        public void setVectorEnabled(boolean vectorEnabled) {
+            this.vectorEnabled = vectorEnabled;
         }
     }
 

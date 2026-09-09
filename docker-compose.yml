@@ -14,7 +14,7 @@ services:
       retries: 5
 
   chromadb:
-    image: chromadb/chroma:0.5.23
+    image: ghcr.io/chroma-core/chroma:1.0.0
     container_name: echomind-java-chromadb
     ports:
       - "8002:8000"
@@ -25,11 +25,25 @@ services:
     volumes:
       - chromadb-data:/chroma/chroma
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/heartbeat || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v2/heartbeat || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: echomind-java-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   echomind-java:
     build:
@@ -45,6 +59,9 @@ services:
       - REDIS_PORT=6379
       - CHROMA_HOST=http://chromadb
       - CHROMA_PORT=8000
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-bge-m3}
+      - OLLAMA_PULL_MODEL_STRATEGY=${OLLAMA_PULL_MODEL_STRATEGY:-when_missing}
       - ECHOMIND_DATA_DIR=/app/data/java
       - KNOWLEDGE_STORE_PATH=/app/data/java/knowledge-store.json
       - MEMORY_STORE_PATH=/app/data/java/memory-store.json
@@ -56,6 +73,8 @@ services:
       redis:
         condition: service_healthy
       chromadb:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
@@ -93,5 +112,6 @@ services:
 volumes:
   redis-data:
   chromadb-data:
+  ollama-data:
   app-data:
   prometheus-data:
