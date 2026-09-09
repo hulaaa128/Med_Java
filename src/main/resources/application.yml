@@ -6,6 +6,9 @@ spring:
     name: echomind-java
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:anthropic}
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.vectorstore.chroma.autoconfigure.ChromaVectorStoreAutoConfiguration
   jackson:
     property-naming-strategy: SNAKE_CASE
   mvc:
@@ -18,6 +21,18 @@ spring:
       password: ${REDIS_PASSWORD:echomind123}
       timeout: 2s
   ai:
+    model:
+      embedding: ollama
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      embedding:
+        model: ${OLLAMA_EMBEDDING_MODEL:bge-m3}
+      init:
+        pull-model-strategy: ${OLLAMA_PULL_MODEL_STRATEGY:never}
+        timeout: ${OLLAMA_PULL_TIMEOUT:10m}
+        max-retries: ${OLLAMA_PULL_MAX_RETRIES:1}
+        chat:
+          include: false
     anthropic:
       api-key: ${ANTHROPIC_API_KEY:${LLM_STARTUP_API_KEY:echomind-local-placeholder}}
       base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
@@ -30,7 +45,7 @@ spring:
       chroma:
         client:
           host: ${CHROMA_HOST:http://localhost}
-          port: ${CHROMA_PORT:8001}
+          port: ${CHROMA_PORT:8002}
         collection-name: ${CHROMA_COLLECTION:echomind_knowledge}
         initialize-schema: true
 
@@ -59,6 +74,10 @@ echomind:
     top-k: ${RAG_TOP_K:4}
     bm25-weight: ${RAG_BM25_WEIGHT:0.45}
     vector-weight: ${RAG_VECTOR_WEIGHT:0.55}
+    rrf-k: ${RAG_RRF_K:60}
+    recall-multiplier: ${RAG_RECALL_MULTIPLIER:3}
+    similarity-threshold: ${RAG_SIMILARITY_THRESHOLD:0.0}
+    vector-enabled: ${RAG_VECTOR_ENABLED:true}
   storage:
     data-dir: ${ECHOMIND_DATA_DIR:data/java}
     knowledge-path: ${KNOWLEDGE_STORE_PATH:${ECHOMIND_DATA_DIR:data/java}/knowledge-store.json}
@@ -81,8 +100,9 @@ spring:
   autoconfigure:
     exclude:
       - org.springframework.ai.model.anthropic.autoconfigure.AnthropicChatAutoConfiguration
-      - org.springframework.ai.vectorstore.chroma.autoconfigure.ChromaVectorStoreAutoConfiguration
   ai:
+    model:
+      chat: deepseek
     deepseek:
       api-key: ${DEEPSEEK_API_KEY:${LLM_STARTUP_API_KEY:echomind-local-placeholder}}
       base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
@@ -100,4 +120,6 @@ spring:
   autoconfigure:
     exclude:
       - org.springframework.ai.model.deepseek.autoconfigure.DeepSeekChatAutoConfiguration
-      - org.springframework.ai.vectorstore.chroma.autoconfigure.ChromaVectorStoreAutoConfiguration
+  ai:
+    model:
+      chat: anthropic

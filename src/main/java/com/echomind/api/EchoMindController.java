@@ -101,13 +101,16 @@ public class EchoMindController {
                 ? UUID.randomUUID().toString()
                 : request.conversationId();
         String requestId = UUID.randomUUID().toString().substring(0, 8);
+        //读取Redis会话记忆
         MemoryContext memoryContext = memoryManager.getContext(userId, conversationId, request.message());
         String memoryText = memoryContext.toPromptText(objectMapper);
         List<Map<String, String>> history = memoryContext.recentMessages().stream()
                 .skip(Math.max(0, memoryContext.recentMessages().size() - 5))
                 .map(m -> Map.of("role", m.role().name().toLowerCase(), "content", m.content()))
                 .toList();
+        //意图识别
         IntentResult intentResult = intentRecognizer.recognize(request.message(), history);
+        //是否使用rag
         boolean useKnowledge = shouldUseKnowledge(intentResult.intent());
         ToolCallTrace knowledgeTrace = null;
         ToolResult<List<SearchResult>> knowledge = useKnowledge
@@ -126,15 +129,19 @@ public class EchoMindController {
         }
         String knowledgeText = buildKnowledgeContext(knowledge.data());
         String fullContext = join(memoryText, knowledgeText);
+        //聚合答案
         OrchestratorResult result = orchestrator.run(
                 AgentRequest.of(request.message(), userId, conversationId, fullContext, history, intentResult, requestId),
                 knowledgeTrace == null ? List.of() : List.of(knowledgeTrace)
         );
+        //校验
         AnswerVerifier.VerificationResult verification = answerVerifier.verify(request.message(), result.response(), fullContext);
         boolean escalated = result.escalated() || verification.needEscalation();
         memoryManager.addMessage(userId, conversationId, MessageRole.USER, request.message());
         memoryManager.addMessage(userId, conversationId, MessageRole.ASSISTANT, result.response());
+        //更新画像
         memoryManager.updateProfile(userId, conversationId);
+        //返回答案
         return new ChatResponse(
                 conversationId,
                 result.requestId(),
@@ -159,7 +166,7 @@ public class EchoMindController {
     }
 
     @PostMapping("/search")
-    @Operation(summary = "知识库检索", description = "对用户查询做查询改写、并行召回和 LLM rerank。")
+    @Operation(summary = "知识库检索", description = "对用户查询做查询改写、BM25 + ChromaDB 混合召回、RRF 融合和 LLM rerank。")
     public Map<String, Object> search(
             @Parameter(description = "检索关键词或用户问题", example = "退款多久能到账") @RequestParam String query,
             @Parameter(description = "返回结果数量", example = "5") @RequestParam(defaultValue = "5") int topK) {
@@ -168,7 +175,7 @@ public class EchoMindController {
     }
 
     @PostMapping("/knowledge/add")
-    @Operation(summary = "批量添加知识文档", description = "将文档切片后写入 Java 版持久化知识库。")
+    @Operation(summary = "批量添加知识文档", description = "将文档切片后写入本地 BM25 索引，并通过 EmbeddingModel 生成向量后 upsert 到 ChromaDB。")
     public Map<String, Object> addKnowledge(@Valid @RequestBody BatchDocInput input) {
         List<Map<String, String>> docs = input.documents().stream()
                 .map(d -> Map.of("title", d.title(), "content", d.content()))
@@ -197,9 +204,12 @@ public class EchoMindController {
     }
 
     @GetMapping("/knowledge/stats")
-    @Operation(summary = "知识库统计", description = "返回当前知识库片段数量。")
+    @Operation(summary = "知识库统计", description = "返回知识库片段数量、向量库状态和最近一次检索模式。")
     public Map<String, Object> knowledgeStats() {
-        return Map.of("total_chunks", knowledgeBaseService.docCount());
+        return Map.of(
+                "total_chunks", knowledgeBaseService.docCount(),
+                "retrieval", knowledgeBaseService.retrievalStatus()
+        );
     }
 
     @GetMapping("/monitor")
