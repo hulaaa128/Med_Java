@@ -70,6 +70,11 @@ echomind:
     ttl-seconds: ${MEMORY_TTL_SECONDS:86400}
     working-max: ${MEMORY_WORKING_MAX:20}
     compress-at: ${MEMORY_COMPRESS_AT:15}
+    keep-recent: ${MEMORY_KEEP_RECENT:5}
+    episodic-top-k: ${MEMORY_EPISODIC_TOP_K:5}
+    episodic-similarity-threshold: ${MEMORY_EPISODIC_SIMILARITY_THRESHOLD:0.5}
+    episodic-collection: ${MEMORY_EPISODIC_COLLECTION:echomind_episodic}
+    profile-collection: ${MEMORY_PROFILE_COLLECTION:echomind_user_profile}
   rag:
     top-k: ${RAG_TOP_K:4}
     bm25-weight: ${RAG_BM25_WEIGHT:0.45}
